@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Query Form</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        textarea,
+        input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        textarea {
+            height: 100px;
+            resize: vertical;
+        }
+
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        .result-container {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .result-window {
+            flex: 1;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+
+        .raw-response {
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+
+        .markdown-view {
+            background-color: #fff;
+        }
+
+        .error {
+            color: #721c24;
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+        }
+
+        .debug-info {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .thinking {
+            color: #0066cc;
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #f0f7ff;
+            border-radius: 4px;
+        }
+
+        .token-usage {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-left: 4px solid #4CAF50;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Deep Research API</h1>
+    <form id="queryForm">
+        <div class="form-group">
+            <label for="query">Query:</label>
+            <textarea id="query" required></textarea>
+        </div>
+        <div class="form-group">
+            <label for="budget">Token Budget:</label>
+            <input type="number" id="budget" value="1000000" required>
+        </div>
+        <div class="form-group">
+            <label for="maxBadAttempt">Max Bad Attempts:</label>
+            <input type="number" id="maxBadAttempt" value="3" required>
+        </div>
+        <button type="submit">Submit Research</button>
+    </form>
+
+    <div class="result-container">
+        <div id="rawResult" class="result-window raw-response"></div>
+        <div id="markdownResult" class="result-window markdown-view"></div>
+    </div>
+
+    <script>
+        async function processStream(response, rawDiv, markdownDiv) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    const text = decoder.decode(value);
+                    rawDiv.textContent += text;
+
+                    // Обработка JSON данных
+                    const lines = text.split('\n');
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const jsonData = JSON.parse(line.substring(6));
+                                if (jsonData.type === 'answer' && jsonData.data) {
+                                    if (jsonData.data.action === 'answer') {
+                                        const responseBlock = document.createElement('div');
+
+                                        if (jsonData.data.think) {
+                                            const thinkingDiv = document.createElement('div');
+                                            thinkingDiv.className = 'thinking';
+                                            thinkingDiv.textContent = jsonData.data.think;
+                                            responseBlock.appendChild(thinkingDiv);
+                                        }
+
+                                        if (jsonData.data.answer) {
+                                            const answerDiv = document.createElement('div');
+                                            answerDiv.className = 'answer';
+                                            answerDiv.innerHTML = marked.parse(jsonData.data.answer);
+                                            responseBlock.appendChild(answerDiv);
+                                        }
+
+                                        if (jsonData.trackers && jsonData.trackers.tokenUsage) {
+                                            const tokenDiv = document.createElement('div');
+                                            tokenDiv.className = 'token-usage';
+                                            tokenDiv.textContent = `Tokens Used: ${jsonData.trackers.tokenUsage}`;
+                                            responseBlock.appendChild(tokenDiv);
+                                        }
+
+                                        markdownDiv.appendChild(responseBlock);
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('Invalid JSON:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error when streaming:', error);
+                throw error;
+            }
+        }
+
+        document.getElementById('queryForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const query = document.getElementById('query').value;
+            const budget = document.getElementById('budget').value;
+            const maxBadAttempt = document.getElementById('maxBadAttempt').value;
+
+            const url = 'http://localhost:3000/api/v1/query';
+            const data = {
+                q: query,
+                budget: parseInt(budget),
+                maxBadAttempt: parseInt(maxBadAttempt)
+            };
+
+            const rawDiv = document.getElementById('rawResult');
+            const markdownDiv = document.getElementById('markdownResult');
+
+            rawDiv.className = 'result-window raw-response';
+            rawDiv.textContent = 'Awaiting response...';
+            markdownDiv.textContent = '';
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const { requestId } = await response.json();
+                rawDiv.textContent = `Request ID: ${requestId}\n\n`;
+
+                const streamUrl = `http://localhost:3000/api/v1/stream/${requestId}`;
+                const streamResponse = await fetch(streamUrl);
+
+                if (!streamResponse.ok) {
+                    throw new Error(`Stream HTTP error! status: ${streamResponse.status}`);
+                }
+
+                await processStream(streamResponse, rawDiv, markdownDiv);
+
+            } catch (error) {
+                rawDiv.className = 'result-window raw-response error';
+                rawDiv.innerHTML = `<div>Error: ${error.message}</div>`;
+                console.error('Error:', error);
+            }
+        });
+    </script>
+</body>
+
+</html>
